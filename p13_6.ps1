@@ -1,8 +1,17 @@
+# зайти на страничку, нажать "создать окружение"
+# https://my.rebrainme.com/course/devops/task/2506
+# получить значение переменных
+
 cloud_id="b1g194thq1f5sstpfb1r"
 folder_id="b1gjanbt2e6g7ur4imc9"
 subnet_id="fl8f3f939db1kn9m6d2f"
 subnet_name="sandbox-subnet-semjs"
 zone="ru-central1-d"
+
+
+# Установите yc (можно не ставить, но если вдруг захочется...)
+# curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+# source ~/.bashrc
 
 sudo chown user:user /opt/
 
