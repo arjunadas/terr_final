@@ -1,8 +1,24 @@
+# зайти на страничку, нажать "создать окружение"
+# https://my.rebrainme.com/course/devops/task/2506
+# получить значение переменных
+
+cloud_id="b1g194thq1f5sstpfb1r"
+folder_id="b1gjanbt2e6g7ur4imc9"
+subnet_id="fl8f3f939db1kn9m6d2f"
+subnet_name="sandbox-subnet-semjs"
+zone="ru-central1-d"
+
+
+# Установите yc (можно не ставить, но если вдруг захочется...)
+# curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+# source ~/.bashrc
+
 sudo chown user:user /opt/
 
 mkdir -p /opt/dev /opt/prod /opt/modules
 mkdir -p /opt/modules/vpc /opt/modules/security_groups /opt/modules/db /opt/modules/vm
 
+# VPC Module (использует существующую подсеть)
 cat > /opt/modules/vpc/main.tf << 'EOF'
 terraform {
   required_providers {
@@ -12,32 +28,29 @@ terraform {
   }
 }
 
-resource "yandex_vpc_network" "this" {
-  name = "vpc-${var.username}-${var.environment}"
+data "yandex_vpc_subnet" "existing" {
+  subnet_id = var.existing_subnet_id
 }
 
-resource "yandex_vpc_subnet" "public" {
-  name           = "subnet-public-${var.username}-${var.environment}"
-  network_id     = yandex_vpc_network.this.id
-  zone           = var.zone
-  v4_cidr_blocks = ["192.168.10.0/24"]
+data "yandex_vpc_network" "existing" {
+  network_id = data.yandex_vpc_subnet.existing.network_id
 }
 
 resource "yandex_vpc_subnet" "private" {
   name           = "subnet-private-${var.username}-${var.environment}"
-  network_id     = yandex_vpc_network.this.id
+  network_id     = data.yandex_vpc_network.existing.id
   zone           = var.zone
-  v4_cidr_blocks = ["192.168.20.0/24"]
+  v4_cidr_blocks = ["10.6.0.0/24"]
 }
 EOF
 
 cat > /opt/modules/vpc/outputs.tf << 'EOF'
 output "network_id" {
-  value = yandex_vpc_network.this.id
+  value = data.yandex_vpc_network.existing.id
 }
 
 output "public_subnet_id" {
-  value = yandex_vpc_subnet.public.id
+  value = var.existing_subnet_id
 }
 
 output "private_subnet_id" {
@@ -45,11 +58,11 @@ output "private_subnet_id" {
 }
 
 output "public_subnet_cidr" {
-  value = yandex_vpc_subnet.public.v4_cidr_blocks
+  value = data.yandex_vpc_subnet.existing.v4_cidr_blocks
 }
 EOF
 
-cat > /opt/modules/vpc/variables.tf << 'EOF'
+cat > /opt/modules/vpc/variables.tf << EOF
 variable "username" {
   type = string
 }
@@ -60,10 +73,16 @@ variable "environment" {
 
 variable "zone" {
   type    = string
-  default = "ru-central1-d"
+  default = "$zone"
+}
+
+variable "existing_subnet_id" {
+  type = string
+  description = "ID существующей публичной подсети"
 }
 EOF
 
+# DB Module
 cat > /opt/modules/db/main.tf << 'EOF'
 terraform {
   required_providers {
@@ -122,7 +141,7 @@ output "host_fqdn" {
 }
 EOF
 
-cat > /opt/modules/db/variables.tf << 'EOF'
+cat > /opt/modules/db/variables.tf << EOF
 variable "username" {
   type = string
 }
@@ -141,7 +160,7 @@ variable "subnet_id" {
 
 variable "zone" {
   type    = string
-  default = "ru-central1-d"
+  default = "$zone"
 }
 
 variable "db_password" {
@@ -150,6 +169,7 @@ variable "db_password" {
 }
 EOF
 
+# Security Groups Module
 cat > /opt/modules/security_groups/main.tf << 'EOF'
 terraform {
   required_providers {
@@ -243,6 +263,7 @@ variable "vm_subnet_cidr" {
 }
 EOF
 
+# VM Module with cloud-init
 cat > /opt/modules/vm/cloud-init.tpl << 'EOF'
 #!/bin/bash
 set -e
@@ -295,8 +316,8 @@ NGINX
 ln -sf /etc/nginx/sites-available/wordpress /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
-systemctl restart nginx || true
-systemctl restart php8.1-fpm || true
+systemctl restart nginx
+systemctl restart php8.1-fpm
 
 echo "WordPress installation completed!"
 EOF
@@ -323,7 +344,7 @@ resource "yandex_compute_instance" "this" {
 
   boot_disk {
     initialize_params {
-      image_id = "fd8hrphlcsmi293sjc74"  # Ubuntu 22.04
+      image_id = "fd8hrphlcsmi293sjc74"
       size     = 20
     }
   }
@@ -351,7 +372,7 @@ output "public_ip" {
 }
 EOF
 
-cat > /opt/modules/vm/variables.tf << 'EOF'
+cat > /opt/modules/vm/variables.tf << EOF
 variable "username" {
   type = string
 }
@@ -362,7 +383,7 @@ variable "environment" {
 
 variable "zone" {
   type    = string
-  default = "ru-central1-d"
+  default = "$zone"
 }
 
 variable "cpu" {
@@ -399,7 +420,8 @@ variable "db_password" {
 }
 EOF
 
-cat > /opt/dev/main.tf << 'EOF'
+# Dev Environment
+cat > /opt/dev/main.tf << EOF
 terraform {
   required_providers {
     yandex = {
@@ -415,15 +437,17 @@ terraform {
 
 provider "yandex" {
   service_account_key_file = "/opt/authorized_key.json"
-  cloud_id                 = "b1g194thq1f5sstpfb1r"
-  folder_id                = "b1g9k1ints1npj40g344"
-  zone                     = "ru-central1-d"
+  cloud_id                 = "$cloud_id"
+  folder_id                = "$folder_id"
+  zone                     = "$zone"
 }
 
 module "vpc" {
-  source      = "../modules/vpc"
-  username    = "ayakurnov1982"
-  environment = "dev"
+  source            = "../modules/vpc"
+  username          = "ayakurnov1982"
+  environment       = "dev"
+  existing_subnet_id = "$subnet_id"
+  zone              = "$zone"
 }
 
 module "security_groups" {
@@ -440,6 +464,7 @@ module "db" {
   environment = "dev"
   network_id  = module.vpc.network_id
   subnet_id   = module.vpc.private_subnet_id
+  zone        = "$zone"
   db_password = var.db_password
 }
 
@@ -449,6 +474,7 @@ module "vm" {
   environment          = "dev"
   cpu                  = 2
   ram                  = 2
+  zone                 = "$zone"
   public_subnet_id     = module.vpc.public_subnet_id
   vm_security_group_id = module.security_groups.vm_security_group_id
   db_host              = module.db.host_fqdn
@@ -459,9 +485,9 @@ module "vm" {
 
 resource "null_resource" "save_ip" {
   depends_on = [module.vm]
-  
+
   provisioner "local-exec" {
-    command = "echo ${module.vm.public_ip} > /opt/ip.txt"
+    command = "echo \${module.vm.public_ip} > /opt/ip.txt"
   }
 }
 EOF
@@ -483,7 +509,8 @@ cat > /opt/dev/terraform.tfvars << 'EOF'
 db_password = "SecurePass123!"
 EOF
 
-cat > /opt/prod/main.tf << 'EOF'
+# Prod Environment
+cat > /opt/prod/main.tf << EOF
 terraform {
   required_providers {
     yandex = {
@@ -499,15 +526,17 @@ terraform {
 
 provider "yandex" {
   service_account_key_file = "/opt/authorized_key.json"
-  cloud_id                 = "b1g194thq1f5sstpfb1r"
-  folder_id                = "b1g9k1ints1npj40g344"
-  zone                     = "ru-central1-d"
+  cloud_id                 = "$cloud_id"
+  folder_id                = "$folder_id"
+  zone                     = "$zone"
 }
 
 module "vpc" {
-  source      = "../modules/vpc"
-  username    = "ayakurnov1982"
-  environment = "prod"
+  source            = "../modules/vpc"
+  username          = "ayakurnov1982"
+  environment       = "prod"
+  existing_subnet_id = "$subnet_id"
+  zone              = "$zone"
 }
 
 module "security_groups" {
@@ -524,6 +553,7 @@ module "db" {
   environment = "prod"
   network_id  = module.vpc.network_id
   subnet_id   = module.vpc.private_subnet_id
+  zone        = "$zone"
   db_password = var.db_password
 }
 
@@ -533,6 +563,7 @@ module "vm" {
   environment          = "prod"
   cpu                  = 2
   ram                  = 4
+  zone                 = "$zone"
   public_subnet_id     = module.vpc.public_subnet_id
   vm_security_group_id = module.security_groups.vm_security_group_id
   db_host              = module.db.host_fqdn
@@ -543,9 +574,9 @@ module "vm" {
 
 resource "null_resource" "save_ip" {
   depends_on = [module.vm]
-  
+
   provisioner "local-exec" {
-    command = "echo ${module.vm.public_ip} >> /opt/ip.txt"
+    command = "echo \${module.vm.public_ip} >> /opt/ip.txt"
   }
 }
 EOF
@@ -567,26 +598,10 @@ cat > /opt/prod/terraform.tfvars << 'EOF'
 db_password = "SecurePass123!PROD"
 EOF
 
-cat > /opt/versions.tf << 'EOF'
-terraform {
-  required_providers {
-    yandex = {
-      source = "yandex-cloud/yandex"
-      version = "~> 0.139.0"
-    }
-  }
-}
-EOF
-
-
-
-
-
-
-
-cd /opt/dev
-terraform init
-terraform plan
-terraform apply  -auto-approve
-
-terraform destroy -auto-approve
+echo "Все файлы успешно созданы!"
+echo ""
+echo "Для развертывания dev окружения выполните:"
+echo "cd /opt/dev && terraform init && terraform apply -auto-approve"
+echo ""
+echo "Для развертывания prod окружения выполните:"
+echo "cd /opt/prod && terraform init && terraform apply -auto-approve"
